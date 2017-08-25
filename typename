@@ -1,0 +1,152 @@
+C++ typename的起源与用法
+
+
+typedef typename __type_traits<T>::has_trivial_destructor trivial_destructor;
+
+typedef char* PCHAR;
+可为何此处多了一个typename？另外__type_traits又是什么？看起来有些眼熟，想起之前在Effective C++上曾经看过traits这一技术的介绍，和这里的__type_traits有点像。只是一直未曾遇到需要traits的时候，所以当时并未仔细研究。然而STL中大量的充斥着各种各样的traits，一查才发现原来它是一种非常高级的技术，在更现的高级语言中已经很普遍。因此这次花了些时间去学习它，接下来还有会有另一篇文章来详细介绍C++的traits技术。在这里，我们暂时忘记它，仅将它当成一个普通的类，先来探讨一下这个多出来的typename是怎么回事？
+
+typename的常见用法
+对于typename这个关键字，如果你熟悉C++的模板，一定会知道它有这样一种最常见的用法(代码摘自C++ Primer)：
+
+// implement strcmp-like generic compare function
+// returns 0 if the values are equal, 1 if v1 is larger, -1 if v1 is smaller
+template <typename T>
+int compare(const T &v1, const T &v2)
+{
+    if (v1 < v2) return -1;
+    if (v2 < v1) return 1;
+    return 0;
+}
+也许你会想到上面这段代码中的typename换成class也一样可以，不错！那么这里便有了疑问，这两种方式有区别么？查看C++ Primer之后，发现两者完全一样。那么为什么C++要同时支持这两种方式呢？既然class很早就已经有了，为什么还要引入typename这一关键字呢？问的好，这里面有一段鲜为人知的历史（也许只是我不知道:-)）。带着这些疑问，我们开始探寻之旅。
+
+
+类作用域
+在类外部访问类中的名称时，可以使用类作用域操作符，形如MyClass::name的调用通常存在三种：静态数据成员、静态成员函数和嵌套类型：
+
+struct MyClass {
+    static int A;
+    static int B();
+    typedef int C;
+}
+MyClass::A, MyClass::B, MyClass::C分别对应着上面三种。
+
+引入typename的真实原因
+结束以上三个概念的讨论，让我们接着揭开typename的神秘面纱。
+
+一个例子
+在Stroustrup起草了最初的模板规范之后，人们更加无忧无虑的使用了class很长一段时间。可是，随着标准化C++工作的到来，人们发现了模板这样一种定义：
+
+template <class T>
+void foo() {
+    T::iterator * iter;
+    // ...
+}
+这段代码的目的是什么？多数人第一反应可能是：作者想定义一个指针iter，它指向的类型是包含在类作用域T中的iterator。可能存在这样一个包含iterator类型的结构：
+
+struct ContainsAType {
+    struct iterator { /*...*/ };
+    // ...
+};
+然后像这样实例化foo：
+
+foo<ContainsAType>();
+这样一来，iter那行代码就很明显了，它是一个ContainsAType::iterator类型的指针。到目前为止，咱们猜测的一点不错，一切都看起来很美好。
+
+问题浮现
+在类作用域一节中，我们介绍了三种名称，由于MyClass已经是一个完整的定义，因此编译期它的类型就可以确定下来，也就是说MyClass::A这些名称对于编译器来说也是已知的。
+
+可是，如果是像T::iterator这样呢？T是模板中的类型参数，它只有等到模板实例化时才会知道是哪种类型，更不用说内部的iterator。通过前面类作用域一节的介绍，我们可以知道，T::iterator实际上可以是以下三种中的任何一种类型：
+
+静态数据成员
+静态成员函数
+嵌套类型
+前面例子中的ContainsAType::iterator是嵌套类型，完全没有问题。可如果是静态数据成员呢？如果实例化foo模板函数的类型是像这样的：
+
+struct ContainsAnotherType {
+    static int iterator;
+    // ...
+};
+然后如此实例化foo的类型参数：
+
+foo<ContainsAnotherType>();
+那么，T::iterator * iter;被编译器实例化为ContainsAnotherType::iterator * iter;，这是什么？前面是一个静态成员变量而不是类型，那么这便成了一个乘法表达式，只不过iter在这里没有定义，编译器会报错：
+
+error C2065: ‘iter’ : undeclared identifier
+
+但如果iter是一个全局变量，那么这行代码将完全正确，它是表示计算两数相乘的表达式，返回值被抛弃。
+
+同一行代码能以两种完全不同的方式解释，而且在模板实例化之前，完全没有办法来区分它们，这绝对是滋生各种bug的温床。这时C++标准委员会再也忍不住了，与其到实例化时才能知道到底选择哪种方式来解释以上代码，委员会决定引入一个新的关键字，这就是typename。
+
+千呼万唤始出来
+我们来看看C++标准：
+
+A name used in a template declaration or definition and that is dependent on a template-parameter is assumed not to name a type unless the applicable name lookup finds a type name or the name is qualified by the keyword typename.
+
+对于用于模板定义的依赖于模板参数的名称，只有在实例化的参数中存在这个类型名，或者这个名称前使用了typename关键字来修饰，编译器才会将该名称当成是类型。除了以上这两种情况，绝不会被当成是类型。
+
+因此，如果你想直接告诉编译器T::iterator是类型而不是变量，只需用typename修饰：
+
+template <class T>
+void foo() {
+    typename T::iterator * iter;
+    // ...
+}
+这样编译器就可以确定T::iterator是一个类型，而不再需要等到实例化时期才能确定，因此消除了前面提到的歧义。
+
+不同编译器对错误情况的处理
+但是如果仍然用ContainsAnotherType来实例化foo，前者只有一个叫iterator的静态成员变量，而后者需要的是一个类型，结果会怎样？我在Visual C++ 2010和g++ 4.3.4上分别做了实验，结果如下：
+
+Visual C++ 2010仍然报告了和前面一样的错误：
+
+error C2065: ‘iter’ : undeclared identifier
+
+虽然我们已经用关键字typename告诉了编译器iterator应该是一个类型，但是用一个定义了iterator变量的结构来实例化模板时，编译器却选择忽略了此关键字。出现错误只是由于iter没有定义。
+
+再来看看g++如何处理这种情况，它的错误信息如下：
+
+In function ‘void foo() [with T = ContainsAnotherType]’:instantiated from hereerror: no type named ‘iterator’ in ‘struct ContainsAnotherType’
+
+g++在ContainsAnotherType中没有找到iterator类型，所以直接报错。它并没有尝试以另外一种方式来解释，由此可见，在这点上，g++更加严格，更遵循C++标准。
+
+使用typename的规则
+最后这个规则看起来有些复杂，可以参考MSDN：
+
+typename在下面情况下禁止使用：
+模板定义之外，即typename只能用于模板的定义中
+非限定类型，比如前面介绍过的int，vector<int>之类
+基类列表中，比如template <class T> class C1 : T::InnerType不能在T::InnerType前面加typename
+构造函数的初始化列表中
+如果类型是依赖于模板参数的限定名，那么在它之前必须加typename(除非是基类列表，或者在类的初始化成员列表中)
+其它情况下typename是可选的，也就是说对于一个不是依赖名的限定名，该名称是可选的，例如vector<int> vi;
+其它例子
+对于不会引起歧义的情况，仍然需要在前面加typename，比如：
+
+template <class T>
+void foo() {
+    typename T::iterator iter;
+    // ...
+}
+不像前面的T::iterator * iter可能会被当成乘法表达式，这里不会引起歧义，但仍需加typename修饰。
+
+再看下面这种：
+
+template <class T>
+void foo() {
+    typedef typename T::iterator iterator_type;
+    // ...
+}
+是否和文章刚开始的那行令人头皮发麻的代码有些许相似？没错！现在终于可以解开typename之迷了，看到这里，我相信你也一定可以解释那行代码了，我们再看一眼：
+
+typedef typename __type_traits<T>::has_trivial_destructor trivial_destructor;
+它是将__type_traits<T>这个模板类中的has_trivial_destructor嵌套类型定义一个叫做trivial_destructor的别名，清晰明了。
+
+再看常见用法
+既然typename关键字已经存在，而且它也可以用于最常见的指定模板参数，那么为什么不废除class这一用法呢？答案其实也很明显，因为在最终的标准出来之前，所有已存在的书、文章、教学、代码中都是使用的是class，可以想像，如果标准不再支持class，会出现什么情况。
+
+对于指定模板参数这一用法，虽然class和typename都支持，但就个人而言我还是倾向使用typename多一些，因为我始终过不了class表示用户定义类型这道坎。另外，从语义上来说，typename比class表达的更为清楚。C++ Primer也建议使用typename:
+
+使用关键字typename代替关键字class指定模板类型形参也许更为直观，毕竟，可以使用内置类型（非类类型）作为实际的类型形参，而且，typename更清楚地指明后面的名字是一个类型名。但是，关键字typename是作为标准C++的组成部分加入到C++中的，因此旧的程序更有可能只用关键字class。
+
+
+本文转自：http://feihu.me/blog/2014/the-origin-and-usage-of-typename/
